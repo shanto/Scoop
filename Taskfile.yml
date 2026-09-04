@@ -1,0 +1,27 @@
+version: '3'
+
+tasks:
+  cancel-runs:
+    desc: Cancel queued and in-progress GitHub Actions workflow runs
+    cmds:
+      - gh run list --limit 100 --json databaseId,status --jq '.[] | select(.status == "queued" or .status == "in_progress") | .databaseId' | while read d; do gh run cancel $d; done
+  last-log:
+    cmds:
+      - gh run list -L 1 --json databaseId --jq '.[] | .databaseId' | read d && gh run view $d --log
+  push-workflow:
+    cmds:
+      - git add .github/workflows/*
+      - git commit -m update-workflows
+      - task cancel-runs
+      - git push
+  watch-run:
+    - gh run list -s in_progress -L 1 --json databaseId --jq '.[] | .databaseId' | read d && gh run view $d --web
+  download-artifact:*:
+    - mkdir -p ./build
+    - rm -rf ./build/{{index .MATCH 0}}
+    - gh run download -n {{index .MATCH 0}} -D build/{{index .MATCH 0}}
+  delete-completed-run:
+    - gh run list -s completed -L 10 --json databaseId --jq '.[] | .databaseId' | while read d; do gh run delete $d; done
+  reinstall:*:
+    - scoop uninstall {{index .MATCH 0}}
+    - scoop install .\\bucket\\{{index .MATCH 0}}.json
