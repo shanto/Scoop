@@ -1,0 +1,30 @@
+{
+  "version": "3.7.4",
+  "description": "GUI for rclone & S3",
+  "license": "Apache-2.0",
+  "suggest": {
+    "Microsoft Edge WebView2": "extras/webview2"
+  },
+  "architecture": {
+    "64bit": {
+      "hash": "1ad09c56da49ff0984b2876e7798540ca7393f0038e35e4c0de7454ad2b2855d",
+      "url": "https://api.github.com/repos/shanto/rclone-ui/releases/assets/546870084#/dl.7z"
+    }
+  },
+  "pre_install": "Remove-Item \"$dir\\`$PLUGINSDIR\", \"$dir\\uninstall.exe\" -Force -Recurse",
+  "bin": [
+    [
+      "Rclone UI.exe",
+      "rclone-ui"
+    ]
+  ],
+  "shortcuts": [
+    [
+      "Rclone UI.exe",
+      "Rclone UI"
+    ]
+  ],
+  "homepage": "https://github.com/shanto/rclone-ui",
+  "url": "https://api.github.com/repos/shanto/rclone-ui/releases/assets/546870084#/dl.7z",
+  "hash": "1ad09c56da49ff0984b2876e7798540ca7393f0038e35e4c0de7454ad2b2855d"
+}
