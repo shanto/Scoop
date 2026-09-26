@@ -34,7 +34,9 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-ucrt-x86_64-{toolchain,autotools,openssl}
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-autotools
+            mingw-w64-ucrt-x86_64-openssl
 
       # - name: Setup upterm session
       #   uses: owenthereal/action-upterm@v2
