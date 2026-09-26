@@ -47,12 +47,13 @@ jobs:
         run: |
           set -e
 
+          if test ! -f install-sh -a -f ../../install-sh; then cp ../../install-sh . ; fi
+          libtoolize -ci
           autoreconf -fi
-          automake --add-missing --copy
-
           ./configure \
             --prefix=/usr \
-            --with-ssl=/ucrt64
+            --with-ssl=/ucrt64 \
+            --with-drill
 
           make -j"$(nproc)"
 
