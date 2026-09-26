@@ -51,7 +51,7 @@ jobs:
           libtoolize -ci
           autoreconf -fi
           ./configure \
-            --prefix=/usr \
+            --prefix=/ \
             --with-ssl=/ucrt64 \
             --with-drill
 
