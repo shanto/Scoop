@@ -10,8 +10,14 @@ jobs:
   build-windows:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout home repository
+        uses: actions/checkout@v4
+
       - name: Checkout ldns repository
         uses: actions/checkout@v4
+        with:
+          repository: NLnetLabs/ldns
+          path: ldns
 
       - name: Install MinGW and Build Dependencies
         run: |
@@ -25,22 +31,22 @@ jobs:
             flex \
             make
 
+      # - name: Setup warpbuild session
+      #   uses: uses: Warpbuilds/action-debugger@v1.3
+
       - name: Setup upterm session
         uses: owenthereal/action-upterm@v1
         with:
           wait-timeout-minutes: 5
           limit-access-to-actor: true
 
-      - name: Download OpenSSL Source Dependency
-        run: |
-          mkdir -p $HOME/Downloads
-          curl -L https://github.com -o $HOME/Downloads/openssl-1.1.0h.tar.gz
-
       - name: Run Windows Build Script
         run: |
+          cd ldns
+          curl -L https://www.openssl.org/source/openssl-3.5.3.tar.gz -o ./openssl-3.5.3.tar.gz
           chmod +x makewin.sh
           export GITREPO=$(pwd)
-          ./makewin.sh
+          ./makewin.sh -wssl=./openssl-3.5.3.tar.gz
 
       - name: Upload Windows Build Artifact
         uses: actions/upload-artifact@v4
