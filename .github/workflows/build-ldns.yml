@@ -2,9 +2,13 @@ name: Build ldns
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-ldns.yml"
+      - "bucket/ldns.json"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
