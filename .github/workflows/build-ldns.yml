@@ -1,0 +1,48 @@
+name: build ldns
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'bucket/ldns.json'
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ldns repository
+        uses: actions/checkout@v4
+
+      - name: Install MinGW and Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mingw-w64 \
+            autoconf \
+            automake \
+            libtool \
+            bison \
+            flex \
+            make
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+      - name: Download OpenSSL Source Dependency
+        run: |
+          mkdir -p $HOME/Downloads
+          curl -L https://github.com -o $HOME/Downloads/openssl-1.1.0h.tar.gz
+
+      - name: Run Windows Build Script
+        run: |
+          chmod +x makewin.sh
+          export GITREPO=$(pwd)
+          ./makewin.sh
+
+      - name: Upload Windows Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ldns-windows-binaries
+          path: "*.zip"
