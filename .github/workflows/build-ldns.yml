@@ -44,20 +44,6 @@ jobs:
             mingw-w64-ucrt-x86_64-autotools
             mingw-w64-ucrt-x86_64-openssl
 
-      - name: Debug symlink
-        working-directory: ldns
-        run: |
-          set -x
-          pwd
-          pwd -W
-          type -a ln
-          ls -lad .
-          ls -lad .libs 2>&1 || true
-          ls -lad lib 2>&1 || true
-          mkdir -p .libs
-          ln -s .libs lib
-          ls -lad lib
-
       - name: Build ldns
         working-directory: ldns
         run: |
@@ -77,7 +63,9 @@ jobs:
 
           rm -rf "$GITHUB_WORKSPACE/staging"
 
-          make V=1 DESTDIR="$GITHUB_WORKSPACE/staging" install
+          nl -ba Makefile | sed -n '140,155p'
+          make -n setup-builddir
+          #make V=1 DESTDIR="$GITHUB_WORKSPACE/staging" install
 
       - name: Setup upterm session
         if: failure()
