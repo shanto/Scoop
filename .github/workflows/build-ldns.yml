@@ -1,55 +1,53 @@
-name: build ldns
+name: Build ldns
+
 on:
   workflow_dispatch:
   push:
-    branches:
-      - dev
     paths:
-      - 'bucket/ldns.json'
-jobs:
-  build-windows:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout home repository
-        uses: actions/checkout@v4
+      - ".github/workflows/build-ldns.yml"
+      - "bucket/ldns.json"
 
-      - name: Checkout ldns repository
-        uses: actions/checkout@v4
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout bucket
+        uses: actions/checkout@v5
+        with:
+          path: bucket
+
+      - name: Checkout ldns
+        uses: actions/checkout@v5
         with:
           repository: NLnetLabs/ldns
           path: ldns
+          ref: develop
+          fetch-depth: 0
 
-      - name: Install MinGW and Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            mingw-w64 \
-            autoconf \
-            automake \
-            libtool \
-            bison \
-            flex \
-            make
-
-      # - name: Setup warpbuild session
-      #   uses: uses: Warpbuilds/action-debugger@v1.3
-
-      - name: Setup upterm session
-        uses: owenthereal/action-upterm@v1
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          wait-timeout-minutes: 5
-          limit-access-to-actor: true
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-{toolchain,autotools,openssl}
 
-      - name: Run Windows Build Script
+      - name: Build ldns
+        working-directory: ldns
         run: |
-          cd ldns
-          curl -L https://www.openssl.org/source/openssl-3.5.3.tar.gz -o ./openssl-3.5.3.tar.gz
-          chmod +x makewin.sh
-          export GITREPO=$(pwd)
-          ./makewin.sh -wssl=./openssl-3.5.3.tar.gz
-
-      - name: Upload Windows Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ldns-windows-binaries
-          path: "*.zip"
+          set -e
+          autoreconf -fi
+          ./configure \
+            --prefix=/usr \
+            --with-ssl=/ucrt64
+          make -j"$(nproc)"
+          rm -rf "$GITHUB_WORKSPACE/staging"
+          make DESTDIR="$GITHUB_WORKSPACE/staging" install
