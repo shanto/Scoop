@@ -25,10 +25,8 @@ jobs:
             flex \
             make
 
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
 
       - name: Download OpenSSL Source Dependency
         run: |
