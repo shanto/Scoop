@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-win-msys2:
     runs-on: windows-latest
 
     defaults:
@@ -43,6 +43,20 @@ jobs:
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-autotools
             mingw-w64-ucrt-x86_64-openssl
+
+      - name: Debug symlink
+        working-directory: ldns
+        run: |
+          set -x
+          pwd
+          pwd -W
+          type -a ln
+          ls -lad .
+          ls -lad .libs 2>&1 || true
+          ls -lad lib 2>&1 || true
+          mkdir -p .libs
+          ln -s .libs lib
+          ls -lad lib
 
       - name: Build ldns
         working-directory: ldns
