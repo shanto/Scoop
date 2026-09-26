@@ -54,6 +54,7 @@ jobs:
           autoreconf -fi
           ./configure \
             --prefix=/ \
+            --with-examples \
             --with-ssl=/ucrt64 \
             --with-drill
 
@@ -66,7 +67,7 @@ jobs:
 
       - name: Setup upterm session
         if: failure()
-        uses: Warpbuilds/action-debugger@v1.3
-        # uses: owenthereal/action-upterm@v1
+        # uses: Warpbuilds/action-debugger@v1.3
+        uses: owenthereal/action-upterm@v1
         with:
           msys2-location: ${{ steps.setup-msys2.outputs.msys2-location }}
