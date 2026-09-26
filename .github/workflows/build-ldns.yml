@@ -49,6 +49,12 @@ jobs:
         run: |
           set -e
 
+          sed -i \
+            -e 's/test ! -h config\.h/test ! -L config.h/' \
+            -e 's/test ! -h lib/test ! -L lib/' \
+            -e 's/test ! -h include\/ldns/test ! -L include\/ldns/' \
+            Makefile.in
+
           if test ! -f install-sh -a -f ../../install-sh; then cp ../../install-sh . ; fi
           libtoolize -ci
           autoreconf -fi
@@ -58,13 +64,9 @@ jobs:
             --with-ssl=/ucrt64 \
             --with-drill
 
-          cat Makefile
           make -j"$(nproc)"
 
           rm -rf "$GITHUB_WORKSPACE/staging"
-
-          nl -ba Makefile | sed -n '140,155p'
-          make -n setup-builddir
           #make V=1 DESTDIR="$GITHUB_WORKSPACE/staging" install
 
       - name: Setup upterm session
