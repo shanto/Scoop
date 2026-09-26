@@ -29,7 +29,7 @@ jobs:
         with:
           repository: NLnetLabs/ldns
           path: ldns
-          ref: develop
+          ref: 1.9.2
           fetch-depth: 0
 
       - name: Setup MSYS2
@@ -58,11 +58,11 @@ jobs:
             --with-drill
 
           cat Makefile
-          make V=1 -j"$(nproc)"
+          make -j"$(nproc)"
 
           rm -rf "$GITHUB_WORKSPACE/staging"
 
-          make DESTDIR="$GITHUB_WORKSPACE/staging" install
+          make V=1 DESTDIR="$GITHUB_WORKSPACE/staging" install
 
       - name: Setup upterm session
         if: failure()
