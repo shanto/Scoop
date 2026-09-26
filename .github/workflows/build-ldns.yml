@@ -2,13 +2,9 @@ name: Build ldns
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/build-ldns.yml"
-      - "bucket/ldns.json"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -40,14 +36,22 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-{toolchain,autotools,openssl}
 
+      # - name: Setup upterm session
+      #   uses: owenthereal/action-upterm@v2
+
       - name: Build ldns
         working-directory: ldns
         run: |
           set -e
+
           autoreconf -fi
+
           ./configure \
             --prefix=/usr \
             --with-ssl=/ucrt64
+
           make -j"$(nproc)"
+
           rm -rf "$GITHUB_WORKSPACE/staging"
+
           make DESTDIR="$GITHUB_WORKSPACE/staging" install
