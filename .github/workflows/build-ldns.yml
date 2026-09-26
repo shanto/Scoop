@@ -42,15 +42,13 @@ jobs:
             mingw-w64-ucrt-x86_64-autotools
             mingw-w64-ucrt-x86_64-openssl
 
-      # - name: Setup upterm session
-      #   uses: owenthereal/action-upterm@v2
-
       - name: Build ldns
         working-directory: ldns
         run: |
           set -e
 
           autoreconf -fi
+          automake --add-missing --copy
 
           ./configure \
             --prefix=/usr \
@@ -61,3 +59,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/staging"
 
           make DESTDIR="$GITHUB_WORKSPACE/staging" install
+
+      - name: Setup upterm session
+        if: failure()
+        uses: owenthereal/action-upterm@v2
