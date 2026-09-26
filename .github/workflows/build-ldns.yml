@@ -26,8 +26,9 @@ jobs:
             make
 
       - name: Setup upterm session
-        uses: owenthereal/action-upterm@v2
+        uses: owenthereal/action-upterm@v1
         with:
+          wait-timeout-minutes: 5
           limit-access-to-actor: true
 
       - name: Download OpenSSL Source Dependency
