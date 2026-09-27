@@ -1,0 +1,17 @@
+diff --git a/configure.ac b/configure.ac
+index a7082ce0..cdc3b9d3 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -110,7 +110,11 @@ ACX_CHECK_COMPILER_FLAG(fno-strict-aliasing, [CFLAGS="-fno-strict-aliasing $CFLA
+ AC_CHECK_HEADERS([getopt.h time.h],,, [AC_INCLUDES_DEFAULT])
+ 
+ # MinGW32 tests
+-AC_CHECK_HEADERS([winsock2.h ws2tcpip.h],,, [AC_INCLUDES_DEFAULT])
++AC_CHECK_HEADERS([winsock2.h ws2tcpip.h windows.h],,, [AC_INCLUDES_DEFAULT])
++AS_IF([test "x$ac_cv_header_windows_h" = xyes],
++      [AC_DEFINE([USE_WINSOCK], [1],
++                 [Whether the windows socket API is used])])
++AC_CHECK_LIB([iphlpapi], [GetAdaptersAddresses])
+ # end mingw32 tests
+ 
+ # Check for Apple header. This uncovers TARGET_OS_IPHONE, TARGET_OS_TV or TARGET_OS_WATCH

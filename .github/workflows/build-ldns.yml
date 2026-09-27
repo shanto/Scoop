@@ -1,0 +1,201 @@
+name: Build ldns
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/build-ldns.yml"
+      - "bucket/ldns.json"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            msystem: UCRT64
+            prefix: /ucrt64
+            toolchain: mingw-w64-ucrt-x86_64-toolchain
+            autotools: mingw-w64-ucrt-x86_64-autotools
+            openssl: mingw-w64-ucrt-x86_64-openssl
+            cc: gcc
+          - arch: arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            prefix: /clangarm64
+            toolchain: mingw-w64-clang-aarch64-toolchain
+            autotools: mingw-w64-clang-aarch64-autotools
+            openssl: mingw-w64-clang-aarch64-openssl
+            cc: clang
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          cache: true
+          update: true
+          install: >-
+            ${{ matrix.toolchain }}
+            ${{ matrix.autotools }}
+            ${{ matrix.openssl }}
+            zip
+
+      - name: Checkout bucket
+        uses: actions/checkout@v5
+        with:
+          path: scoop
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep -oP '"version"\s*:\s*"\K[^"]+' scoop/bucket/ldns.json | head -n1)
+          OUT="$(cygpath -u "$GITHUB_OUTPUT")"
+          echo "version=$VERSION" >> "$OUT"
+
+      - name: Checkout ldns
+        uses: actions/checkout@v5
+        with:
+          path: ldns
+          repository: NLnetLabs/ldns
+          ref: ${{ steps.version.outputs.version }}
+          fetch-depth: 0
+
+      - name: Apply patches
+        working-directory: ldns
+        shell: bash
+        run: |
+          git apply ../scoop/.github/patches/ldns-windows-winsock.patch
+          git apply ../scoop/.github/patches/ldns-windows-resolver.patch
+
+      - name: Build ldns
+        working-directory: ldns
+        run: |
+          if test ! -f install-sh -a -f ../../install-sh; then cp ../../install-sh . ; fi
+          libtoolize -ci
+          autoreconf -fi
+          CC=${{ matrix.cc }} ./configure \
+            --prefix=${{ matrix.prefix }} \
+            --disable-rpath \
+            --with-ssl=${{ matrix.prefix }} \
+            --with-drill \
+            --with-examples \
+            --with-trust-anchor=root.key;
+          mkdir -p .libs
+          make -j"$(nproc)"
+          STAGING="$(cygpath "$GITHUB_WORKSPACE")/staging"
+          rm -rf $STAGING
+          make DESTDIR=$STAGING install
+
+      - name: Package
+        working-directory: ldns
+        run: |
+          ZIP="ldns-windows-${{ matrix.arch }}.zip"
+          PACK="$(cygpath "$GITHUB_WORKSPACE")/pack"
+          STAGING="$(cygpath "$GITHUB_WORKSPACE")/staging${{ matrix.prefix }}"
+          rm -rf "$PACK"
+          mkdir -p "$PACK"
+          cp "$STAGING"/bin/*.exe "$PACK"/
+          cp "$STAGING"/bin/*.dll "$PACK"/
+          cp ${{ matrix.prefix }}/bin/libssl*.dll    "$PACK"
+          cp ${{ matrix.prefix }}/bin/libcrypto*.dll "$PACK"
+          "$PACK"/drill.exe . DNSKEY > root.sig
+          "$PACK"/ldns-key2ds.exe -n root.sig > "$PACK"/root.key
+          cp LICENSE README Changelog "$PACK"/
+          pushd "$PACK"
+          zip -r "../$ZIP" .
+          sha256sum "../$ZIP" > "../$ZIP.sha256"
+          popd
+
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v2
+        if: ${{ failure() }}
+        with:
+          wait-timeout-minutes: 5
+
+      - name: Upload artifact
+        id: upload-artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ldns-windows-${{ matrix.arch }}
+          path: |
+            ldns-windows-${{ matrix.arch }}.zip
+            ldns-windows-${{ matrix.arch }}.zip.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout bucket
+        uses: actions/checkout@v5
+        with:
+          path: scoop
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ldns-windows-*
+          path: release
+          merge-multiple: true
+
+      - name: Compute hashes and update manifest
+        run: |
+          cp scoop/bucket/ldns.json tmp.json
+          jq \
+            --arg x64 "$(awk '{print $1}' release/ldns-windows-x64.zip.sha256)" \
+            --arg arm64 "$(awk '{print $1}' release/ldns-windows-arm64.zip.sha256)" \
+            '.architecture["64bit"].hash = $x64 |
+            .architecture.arm64.hash = $arm64' \
+            tmp.json > scoop/bucket/ldns.json
+
+      - name: Commit manifest update
+        working-directory: scoop
+        run: |
+          git config user.name "Github Actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/ldns.json
+          git commit -m "Update ldns hashes for ${{ needs.build.outputs.version }} build [skip ci]" || exit 0
+          git push
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ secrets.PAT_SCOOP_RW }}
+          tag_name: ldns-${{ needs.build.outputs.version }}
+          files: |
+            release/ldns-windows-x64.zip
+            release/ldns-windows-x64.zip.sha256
+            release/ldns-windows-arm64.zip
+            release/ldns-windows-arm64.zip.sha256
+
+      - name: Update release tag
+        working-directory: scoop
+        env:
+          GH_TOKEN: ${{ secrets.PAT_SCOOP_RW }}
+        run: |
+          TAG="ldns-${{ needs.build.outputs.version }}"
+          COMMIT="$(git rev-parse HEAD)"
+          git tag -f "$TAG" "$COMMIT"
+          git push origin "$TAG" --force
+          gh release edit "$TAG" --target "$COMMIT"

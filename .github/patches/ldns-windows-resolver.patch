@@ -1,0 +1,283 @@
+diff --git a/drill/drill.c b/drill/drill.c
+index 9db77cf1..c392ad43 100644
+--- a/drill/drill.c
++++ b/drill/drill.c
+@@ -14,6 +14,241 @@
+ #include <openssl/err.h>
+ #endif
+ 
++#ifdef USE_WINSOCK
++#include <iphlpapi.h>
++
++static const char *
++windows_trust_anchor_path(void)
++{
++	/* Resolve the relative trust-anchor path against the directory of the
++	 * running executable, so it works regardless of the current working
++	 * directory (Scoop installs the tools on PATH). */
++	static char path[MAX_PATH];
++	char exe[MAX_PATH];
++	char *slash;
++
++	if (GetModuleFileNameA(NULL, exe, sizeof(exe)) == 0) {
++		return LDNS_TRUST_ANCHOR_FILE;
++	}
++	slash = strrchr(exe, '\\');
++	if (!slash) {
++		return LDNS_TRUST_ANCHOR_FILE;
++	}
++	slash[1] = '\0';
++	snprintf(path, sizeof(path), "%s%s", exe, LDNS_TRUST_ANCHOR_FILE);
++	return path;
++}
++
++static int
++windows_is_link_local_v6(const struct sockaddr_in6 *addr6)
++{
++	const unsigned char *a = addr6->sin6_addr.s6_addr;
++	/* fe80::/10 */
++	return (a[0] == 0xfe && (a[1] & 0xc0) == 0x80);
++}
++
++static int
++windows_has_default_gateway(const IP_ADAPTER_ADDRESSES *adapter)
++{
++	/* An adapter with a real (non-unspecified) gateway is the one used
++	 * for outbound traffic; prefer its DNS servers. */
++	PIP_ADAPTER_GATEWAY_ADDRESS_LH gateway;
++
++	for (gateway = adapter->FirstGatewayAddress; gateway;
++		gateway = gateway->Next) {
++		struct sockaddr *addr = gateway->Address.lpSockaddr;
++		if (!addr) {
++			continue;
++		}
++		if (addr->sa_family == AF_INET) {
++			struct sockaddr_in *a4 = (struct sockaddr_in *)addr;
++			if (a4->sin_addr.s_addr != INADDR_ANY) {
++				return 1;
++			}
++		} else if (addr->sa_family == AF_INET6) {
++			struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)addr;
++			if (!IN6_IS_ADDR_UNSPECIFIED(&a6->sin6_addr)) {
++				return 1;
++			}
++		}
++	}
++	return 0;
++}
++
++static int
++windows_nameserver_seen(ldns_resolver *resolver, const ldns_rdf *nameserver)
++{
++	size_t i;
++	ldns_rdf **servers = ldns_resolver_nameservers(resolver);
++	size_t count = ldns_resolver_nameserver_count(resolver);
++
++	for (i = 0; i < count; i++) {
++		if (ldns_rdf_compare(servers[i], nameserver) == 0) {
++			return 1;
++		}
++	}
++	return 0;
++}
++
++static ldns_status
++windows_resolver_from_adapters(ldns_resolver **res)
++{
++	IP_ADAPTER_ADDRESSES *adapters = NULL;
++	IP_ADAPTER_ADDRESSES *adapter;
++	IP_ADAPTER_DNS_SERVER_ADDRESS *server;
++	ldns_resolver *resolver = NULL;
++	ULONG buffer_size = 0;
++	DWORD error;
++	size_t nameserver_count = 0;
++
++	if (!res) {
++		return LDNS_STATUS_ERR;
++	}
++	*res = NULL;
++
++	error = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, NULL, &buffer_size);
++	if (error != ERROR_BUFFER_OVERFLOW) {
++		return LDNS_STATUS_ERR;
++	}
++	adapters = malloc(buffer_size);
++	if (!adapters) {
++		return LDNS_STATUS_MEM_ERR;
++	}
++	error = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, adapters, &buffer_size);
++	if (error != NO_ERROR) {
++		free(adapters);
++		return LDNS_STATUS_ERR;
++	}
++
++	resolver = ldns_resolver_new();
++	if (!resolver) {
++		free(adapters);
++		return LDNS_STATUS_MEM_ERR;
++	}
++
++	/* First pass: only adapters with a default gateway. */
++	for (adapter = adapters; adapter; adapter = adapter->Next) {
++		if (adapter->OperStatus != IfOperStatusUp) {
++			continue;
++		}
++		if (!windows_has_default_gateway(adapter)) {
++			continue;
++		}
++		for (server = adapter->FirstDnsServerAddress; server;
++			server = server->Next) {
++			struct sockaddr *address = server->Address.lpSockaddr;
++			ldns_rdf *nameserver = NULL;
++
++			if (!address) {
++				continue;
++			}
++			if (address->sa_family == AF_INET) {
++				struct sockaddr_in *address4 =
++					(struct sockaddr_in *)address;
++				nameserver = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_A,
++					sizeof(address4->sin_addr), &address4->sin_addr);
++			} else if (address->sa_family == AF_INET6) {
++				struct sockaddr_in6 *address6 =
++					(struct sockaddr_in6 *)address;
++				/* skip link-local addresses; they are not routable
++				 * without a scope id and would just time out. */
++				if (windows_is_link_local_v6(address6)) {
++					continue;
++				}
++				nameserver = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_AAAA,
++					sizeof(address6->sin6_addr), &address6->sin6_addr);
++			}
++			if (!nameserver) {
++				continue;
++			}
++			/* skip duplicates (the same server may be listed on
++			 * several adapters). */
++			if (windows_nameserver_seen(resolver, nameserver)) {
++				ldns_rdf_deep_free(nameserver);
++				continue;
++			}
++			if (ldns_resolver_push_nameserver(resolver, nameserver)
++				!= LDNS_STATUS_OK) {
++				ldns_rdf_deep_free(nameserver);
++				ldns_resolver_deep_free(resolver);
++				free(adapters);
++				return LDNS_STATUS_MEM_ERR;
++			}
++			ldns_rdf_deep_free(nameserver);
++			nameserver_count++;
++		}
++	}
++
++	/* Second pass: if no gateway adapter yielded a nameserver, fall back
++	 * to any up adapter (e.g. a host with only a static/loopback config). */
++	if (nameserver_count == 0) {
++		for (adapter = adapters; adapter; adapter = adapter->Next) {
++			if (adapter->OperStatus != IfOperStatusUp) {
++				continue;
++			}
++			for (server = adapter->FirstDnsServerAddress; server;
++				server = server->Next) {
++				struct sockaddr *address = server->Address.lpSockaddr;
++				ldns_rdf *nameserver = NULL;
++
++				if (!address) {
++					continue;
++				}
++				if (address->sa_family == AF_INET) {
++					struct sockaddr_in *address4 =
++						(struct sockaddr_in *)address;
++					nameserver = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_A,
++						sizeof(address4->sin_addr), &address4->sin_addr);
++				} else if (address->sa_family == AF_INET6) {
++					struct sockaddr_in6 *address6 =
++						(struct sockaddr_in6 *)address;
++					if (windows_is_link_local_v6(address6)) {
++						continue;
++					}
++					nameserver = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_AAAA,
++						sizeof(address6->sin6_addr), &address6->sin6_addr);
++				}
++				if (!nameserver) {
++					continue;
++				}
++				if (windows_nameserver_seen(resolver, nameserver)) {
++					ldns_rdf_deep_free(nameserver);
++					continue;
++				}
++				if (ldns_resolver_push_nameserver(resolver, nameserver)
++					!= LDNS_STATUS_OK) {
++					ldns_rdf_deep_free(nameserver);
++					ldns_resolver_deep_free(resolver);
++					free(adapters);
++					return LDNS_STATUS_MEM_ERR;
++				}
++				ldns_rdf_deep_free(nameserver);
++				nameserver_count++;
++			}
++		}
++	}
++
++	free(adapters);
++	if (nameserver_count == 0) {
++		ldns_resolver_deep_free(resolver);
++		return LDNS_STATUS_ERR;
++	}
++
++	/* Keep queries snappy: a short timeout and a single retry avoid the
++	 * multi-second stall when a nameserver is unreachable. */
++	{
++		struct timeval timeout;
++		timeout.tv_sec = 1;
++		timeout.tv_usec = 0;
++		ldns_resolver_set_timeout(resolver, timeout);
++	}
++	ldns_resolver_set_retry(resolver, 1);
++
++	*res = resolver;
++	return LDNS_STATUS_OK;
++}
++#endif
++
+ /* query debug, 2 hex dumps */
+ int		verbosity;
+ 
+@@ -66,7 +301,11 @@ usage(FILE *stream, const char *progname)
+ 	fprintf(stream, "\t\t\tWhen DNSSEC enabled tracing (-TD) or signature\n"
+ 			"\t\t\tchasing (-S) and no key files are given, keys are read\n"
+ 			"\t\t\tfrom: %s\n",
++#ifdef USE_WINSOCK
++			windows_trust_anchor_path());
++#else
+ 			LDNS_TRUST_ANCHOR_FILE);
++#endif
+ 	fprintf(stream, "\t-o <mnemonic>\tset flags to:"
+ 			"\n\t\t\t[QR|qr][AA|aa][TC|tc][RD|rd][CD|cd][RA|ra][AD|ad]\n");
+ 	fprintf(stream, "\t\t\tlowercase: unset bit, uppercase: set bit\n");
+@@ -426,7 +665,7 @@ main(int argc, char *argv[])
+ 	if ((PURPOSE == DRILL_CHASE || (PURPOSE == DRILL_TRACE && qdnssec)) &&
+ 			ldns_rr_list_rr_count(key_list) == 0) {
+ 
+-		(void) read_key_file(LDNS_TRUST_ANCHOR_FILE, key_list, true);
++		(void) read_key_file(windows_trust_anchor_path(), key_list, true);
+ 	}
+ 	if (ldns_rr_list_rr_count(key_list) > 0) {
+ 		printf(";; Number of trusted keys: %d\n",
+@@ -601,7 +840,14 @@ main(int argc, char *argv[])
+ 	/* set the nameserver to use */
+ 	if (!serv) {
+ 		/* no server given -- make a resolver from /etc/resolv.conf */
+-		status = ldns_resolver_new_frm_file(&res, resolv_conf_file);
++#ifdef USE_WINSOCK
++		if (!resolv_conf_file) {
++			status = windows_resolver_from_adapters(&res);
++		} else
++#endif
++		{
++			status = ldns_resolver_new_frm_file(&res, resolv_conf_file);
++		}
+ 		if (status != LDNS_STATUS_OK) {
+ 			warning("Could not create a resolver structure: %s (%s)\n"
+ 					"Try drill @localhost if you have a resolver running on your machine.",
