@@ -25,6 +25,9 @@ on:
         required: false
         default: true
         type: boolean
+  schedule:
+    # Daily, 04:23 UTC. A scheduled run always checks out the default branch.
+    - cron: "23 4 * * *"
 
 permissions:
   contents: write
