@@ -1,0 +1,219 @@
+name: Autoupdate
+
+# Keeps bucket/*.json current with upstream, using Scoop's own checkver/autoupdate
+# scripts (bin/checkver.ps1 from a pinned Scoop core checkout) rather than a
+# hand-rolled prober. Each manifest's `checkver` block says where the version
+# lives (GitHub releases, release tags, an HTML page, a JSON API) and its
+# `autoupdate` block says how to rewrite the urls and hashes, so a manifest that
+# gains a new release upstream is bumped here with no code change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Manifest name or glob to check (default: every manifest)"
+        required: false
+        default: "*"
+        type: string
+      force:
+        description: "Re-run autoupdate even when the version did not change (hash refresh)"
+        required: false
+        default: false
+        type: boolean
+      push:
+        description: "Commit and push the result"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+# One run per branch: a manual dispatch must not race the nightly run onto the
+# same ref. Never cancel in progress: an interrupted run leaves the working tree
+# half updated, and the version bumps it already wrote are cheaper to finish.
+concurrency:
+  group: autoupdate-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Scoop core is pinned to a commit so the update engine cannot change under an
+  # unattended run. Bump it deliberately when adopting a checkver fix.
+  SCOOP_CORE_SHA: e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f
+  BUCKET_DIR: bucket
+
+jobs:
+  autoupdate:
+    name: Check upstream and update manifests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch Scoop core
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          $archive = Join-Path $env:RUNNER_TEMP 'scoop-core.tar.gz'
+          $target = Join-Path $env:RUNNER_TEMP 'scoop-core'
+          $source = "https://codeload.github.com/ScoopInstaller/Scoop/tar.gz/$env:SCOOP_CORE_SHA"
+
+          Write-Host "Fetching $source"
+          Invoke-WebRequest $source -OutFile $archive
+          if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+          New-Item -ItemType Directory -Path $target | Out-Null
+          tar -xzf $archive -C $target --strip-components=1
+
+          # checkver.ps1 dot-sources ../lib/*.ps1, so the whole tree has to be there.
+          foreach ($required in 'bin/checkver.ps1', 'lib/autoupdate.ps1', 'lib/versions.ps1') {
+              $path = Join-Path $target $required
+              if (-not (Test-Path $path)) { throw "Scoop core is missing $required" }
+          }
+          Write-Host "Scoop core ready at $target"
+
+      - name: Check versions and autoupdate
+        id: checkver
+        shell: pwsh
+        env:
+          # checkver reads this for GitHub API calls; unauthenticated runs hit the
+          # 60/hour limit after a handful of manifests.
+          SCOOP_GH_TOKEN: ${{ github.token }}
+          APP: ${{ inputs.app }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          # Individual manifests are allowed to fail: one dead upstream page must
+          # not stop the rest of the bucket from updating. Failures are collected
+          # in the report step instead.
+          $ErrorActionPreference = 'Continue'
+          $ProgressPreference = 'SilentlyContinue'
+
+          $app = if ([string]::IsNullOrWhiteSpace($env:APP)) { '*' } else { $env:APP }
+          $params = @{
+              App    = $app
+              Dir    = $env:BUCKET_DIR
+              Update = $true
+          }
+          if ($env:FORCE -eq 'true') { $params['ForceUpdate'] = $true }
+
+          $log = Join-Path $env:RUNNER_TEMP 'checkver.log'
+          Write-Host "checkver -App $app -Dir $($env:BUCKET_DIR) -Update"
+          & (Join-Path $env:RUNNER_TEMP 'scoop-core/bin/checkver.ps1') @params *>&1 |
+              Tee-Object -FilePath $log
+
+          "log=$log" >> $env:GITHUB_OUTPUT
+
+      - name: Report
+        id: report
+        if: always()
+        shell: pwsh
+        env:
+          CHECKVER_LOG: ${{ steps.checkver.outputs.log }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $paths = @(git diff --name-only -- $env:BUCKET_DIR | Where-Object { $_ -like '*.json' })
+          $rows = foreach ($path in $paths) {
+              $app = [IO.Path]::GetFileNameWithoutExtension($path)
+              $now = (Get-Content $path -Raw | ConvertFrom-Json).version
+              $was = '?'
+              $previous = git show "HEAD:$path" 2>$null
+              if ($LASTEXITCODE -eq 0 -and $previous) { $was = ($previous -join "`n" | ConvertFrom-Json).version }
+              [pscustomobject]@{ App = $app; Was = $was; Now = $now }
+          }
+          $rows = @($rows)
+
+          # checkver's Write-Host calls come through a pipe one line at a time, so an
+          # app name and its "couldn't ..." reason land on consecutive lines.
+          $failures = @()
+          if ($env:CHECKVER_LOG -and (Test-Path $env:CHECKVER_LOG)) {
+              $lines = @(Get-Content $env:CHECKVER_LOG | ForEach-Object { $_.TrimEnd() })
+              for ($i = 0; $i -lt $lines.Count; $i++) {
+                  if ($lines[$i] -notmatch '^(?<app>[^\s:]+):$') { continue }
+                  if ($i + 1 -ge $lines.Count) { continue }
+                  $app = $Matches['app']
+                  # The reason may wrap onto the next line (an exception message, then
+                  # "URL ... is not valid"); stop before the next app's header line.
+                  $reason = @($lines[$i + 1])
+                  $end = [Math]::Min($i + 2, $lines.Count - 1)
+                  for ($j = $i + 2; $j -le $end; $j++) {
+                      if ($lines[$j] -match '^[^\s:]+:$') { break }
+                      $reason += $lines[$j]
+                  }
+                  $reason = ($reason -join ' ').Trim()
+                  if ($reason -match "couldn't |URL .* is not valid") {
+                      if ($reason.Length -gt 200) { $reason = $reason.Substring(0, 200) + '...' }
+                      $failures += [pscustomobject]@{ App = $app; Why = $reason }
+                  }
+              }
+              # Hash/download errors are reported by Scoop's error function, with no app prefix.
+              $failures += @($lines | Where-Object { $_ -match '^ERROR\s+\S' } |
+                  ForEach-Object { [pscustomobject]@{ App = '(autoupdate)'; Why = ($_ -replace '^ERROR\s+', '') } })
+          }
+
+          $untracked = @(Get-ChildItem (Join-Path $env:BUCKET_DIR '*.json') | Where-Object {
+                  -not (Get-Content $_.FullName -Raw | ConvertFrom-Json).checkver
+              } | ForEach-Object { $_.BaseName })
+
+          $md = New-Object System.Collections.Generic.List[string]
+          $md.Add('## Autoupdate')
+          $md.Add('')
+          if ($rows.Count -eq 0) {
+              $md.Add('No manifest changed.')
+          } else {
+              $md.Add("$($rows.Count) manifest(s) updated:")
+              $md.Add('')
+              $md.Add('| Manifest | Was | Now |')
+              $md.Add('| --- | --- | --- |')
+              foreach ($row in $rows) { $md.Add("| $($row.App) | $($row.Was) | $($row.Now) |") }
+          }
+          if ($failures.Count -gt 0) {
+              $md.Add('')
+              $md.Add('### Probe failures')
+              $md.Add('')
+              foreach ($f in $failures) { $md.Add("- ``$($f.App)``: $($f.Why)") }
+          }
+          if ($untracked.Count -gt 0) {
+              $md.Add('')
+              $md.Add('### Not tracked (no `checkver` block)')
+              $md.Add('')
+              $md.Add((($untracked | ForEach-Object { "``$_``" }) -join ', '))
+          }
+
+          $md -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $md -join "`n" | Write-Host
+
+          if ($rows.Count -gt 0) {
+              'changed=true' >> $env:GITHUB_OUTPUT
+              "apps=$(($rows | ForEach-Object { $_.App }) -join ',')" >> $env:GITHUB_OUTPUT
+          } else {
+              'changed=false' >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Commit and push
+        if: steps.checkver.outcome == 'success' && steps.report.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.push)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          $paths = @(git diff --name-only -- $env:BUCKET_DIR | Where-Object { $_ -like '*.json' })
+          foreach ($path in $paths) {
+              $app = [IO.Path]::GetFileNameWithoutExtension($path)
+              $version = (Get-Content $path -Raw | ConvertFrom-Json).version
+              git add -- $path
+              git diff --cached --quiet -- $path
+              if ($LASTEXITCODE -eq 0) {
+                  # Only line endings differ; nothing worth a commit.
+                  Write-Host "Skipping $app (line endings only)"
+                  continue
+              }
+              git commit -m "${app}: Update to version $version"
+              if ($LASTEXITCODE -ne 0) { throw "git commit failed for $app" }
+          }
+
+          git push origin "HEAD:$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { throw "git push to $env:GITHUB_REF_NAME failed" }
