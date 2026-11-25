@@ -43,8 +43,8 @@
   ],
   "persist": "root.key",
   "checkver": {
-    "url": "https://nlnetlabs.nl/projects/ldns/about/",
-    "regex": "/ldns-([\\d.]+)\\.tar.gz"
+    "github": "https://api.github.com/repos/shanto/ldns-win/releases/latest",
+    "regex": "^ldns-([0-9.]+)$"
   },
   "autoupdate": {
     "architecture": {
